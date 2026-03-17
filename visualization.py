@@ -3,8 +3,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from config import MIN_SPAN, MAX_SPAN, MIN_CHORD, MAX_CHORD, DROP_HEIGHT
-from trim_solver import trimmed_min_sink
+from config import DROP_HEIGHT
 
 DARK  = "#0d1117";  PANEL = "#161b22"
 GOLD  = "#f0c040";  CYAN  = "#58d8f0"
@@ -21,27 +20,14 @@ def style_ax(ax, title):
     ax.grid(color="#21262d", linestyle="--", linewidth=0.5, alpha=0.7)
 
 def generate_plots(bc, traj, out_fig="glider_optimization_v2.png"):
-    print("\n  Building trimmed sink-rate heat-map...")
-    sv_cm    = np.linspace(MIN_SPAN*100,  MAX_SPAN*100,  14)
-    cv_cm    = np.linspace(MIN_CHORD*100, MAX_CHORD*100, 10)
-    sink_map = np.full((len(cv_cm), len(sv_cm)), float("nan"))
-
-    for i, c_cm in enumerate(cv_cm):
-        for j, b_cm in enumerate(sv_cm):
-            b = b_cm/100;  c = c_cm/100
-            AR_ = b/c
-            if AR_ < 4 or AR_ > 15:
-                continue
-            r = trimmed_min_sink(b, c, bc["wing_af_name"])
-            if r is not None:
-                sink_map[i, j] = r["sink"]
-
-    fig = plt.figure(figsize=(20, 13))
+    print("\n  Building performance plots...")
+    
+    fig = plt.figure(figsize=(18, 12))
     fig.patch.set_facecolor(DARK)
-    gs  = gridspec.GridSpec(2, 3, figure=fig, hspace=0.42, wspace=0.38)
+    gs  = gridspec.GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.35)
 
     # ── A: Trajectory ─────────────────────────────────────────────────────────
-    ax0 = fig.add_subplot(gs[0, :2])
+    ax0 = fig.add_subplot(gs[0, :])
     style_ax(ax0, f"Optimal Trajectory  (T = {traj['T_opt']:.2f} s,  Range = {float(traj['x_sol'][-1]):.1f} m)")
     sc = ax0.scatter(traj["x_sol"], -traj["z_sol"], c=traj["V_sol"], cmap="plasma", s=14, zorder=3)
     ax0.plot(traj["x_sol"], -traj["z_sol"], color=CYAN, lw=1.5, alpha=0.5)
@@ -56,7 +42,7 @@ def generate_plots(bc, traj, out_fig="glider_optimization_v2.png"):
     ax0.set_ylim(-1, DROP_HEIGHT + 2)
 
     # ── B: Angles + Cm vs time ────────────────────────────────────────────────
-    ax1 = fig.add_subplot(gs[0, 2])
+    ax1 = fig.add_subplot(gs[1, 0])
     style_ax(ax1, "Flight Angles & Pitch Moment vs Time")
     ax1b = ax1.twinx()
     ax1.plot(traj["t_sol"], traj["g_sol"],  color=CYAN,  lw=1.8, label="γ (flight path)")
@@ -72,26 +58,8 @@ def generate_plots(bc, traj, out_fig="glider_optimization_v2.png"):
     h2, l2 = ax1b.get_legend_handles_labels()
     ax1.legend(h1+h2, l1+l2, fontsize=7.5, facecolor=PANEL, edgecolor="#30363d", labelcolor=GREY)
 
-    # ── C: Sink-rate heat-map ────────────────────────────────────────────────
-    ax2 = fig.add_subplot(gs[1, :2])
-    style_ax(ax2, f"Trimmed Sink Rate [m/s]  (120g Payload, {bc['wing_af_name'].upper()}, Cm=0) — green = longer flight")
-    vmin_s = float(np.nanmin(sink_map))
-    vmax_s = min(float(np.nanmax(sink_map)), 5.0)
-    im = ax2.pcolormesh(sv_cm, cv_cm, sink_map, cmap="RdYlGn_r", shading="auto", vmin=vmin_s, vmax=vmax_s)
-    cb2 = fig.colorbar(im, ax=ax2, pad=0.01)
-    cb2.set_label("Sink rate (m/s)", color=GREY, fontsize=8)
-    cb2.ax.yaxis.set_tick_params(color=GREY, labelsize=7)
-    plt.setp(cb2.ax.yaxis.get_ticklabels(), color=GREY)
-    ax2.scatter([bc["span"]*100], [bc["chord"]*100], c=RED, s=140, marker="*", zorder=5,
-                label=f"Optimal  ({bc['span']*100:.0f} × {bc['chord']*100:.0f} cm)")
-    ax2.set_xlabel("Span (cm)");  ax2.set_ylabel("Chord (cm)")
-    ax2.legend(fontsize=8, facecolor=PANEL, edgecolor="#30363d", labelcolor=GREY)
-    SV_m, CV_m = np.meshgrid(sv_cm/100, cv_cm/100)
-    cs = ax2.contour(sv_cm, cv_cm, SV_m/CV_m, levels=[4, 6, 8, 10], colors="white", linewidths=0.5, alpha=0.4)
-    ax2.clabel(cs, fmt="AR=%.0f", fontsize=7, colors="white")
-
-    # ── D: Summary card ──────────────────────────────────────────────────────
-    ax3 = fig.add_subplot(gs[1, 2])
+    # ── C: Summary card ──────────────────────────────────────────────────────
+    ax3 = fig.add_subplot(gs[1, 1])
     ax3.set_facecolor(PANEL);  ax3.set_xticks([]);  ax3.set_yticks([])
     for sp in ax3.spines.values(): sp.set_edgecolor("#30363d")
     ax3.set_title("Optimal Design", color=GOLD, fontsize=10, pad=6, fontweight="bold")
