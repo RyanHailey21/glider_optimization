@@ -115,6 +115,8 @@ def generate_plots(bc, traj, out_fig="glider_optimization_v2.png"):
         (f"  Total Mass   {bc['mass']*1000:5.1f} g",   GREEN),
         (f"  Structural   {bc['structural_mass']*1000:5.1f} g", GREEN),
         (f"  Ballast      {bc['ballast']*1000:5.1f} g", GREEN),
+        (f"  Batt Pos    {bc['batt_x']*100:+5.1f} cm", GREEN),
+        (f"  Motor Pos   {bc['motor_x']*100:+5.1f} cm", GREEN),
         (f"  Trim alpha  {bc['alpha']:+5.1f}°",  GREEN),
         (f"  L/D          {bc['LD']:5.2f}",      GREEN),
         (f"  Trim speed   {bc['V']:5.2f} m/s",   GREEN),

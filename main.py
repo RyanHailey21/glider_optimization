@@ -39,8 +39,11 @@ def print_build_guide(bc, traj):
     ║    CG Position: {CG_X*100:.1f} cm from wing leading edge  (25% MAC)        ║
     ║    Total Mass:  {bc['mass']*1000:.1f} g                                        ║
     ║    Structure:   {bc['structural_mass']*1000:.1f} g                                        ║
-    ║    Payload:     120.0 g                                          ║
-    ║    Added Nose Ballast: {bc['ballast']*1000:.1f} g                                 ║
+    ║    Payload:     120.0 g (Batt={PAYLOAD_BATTERY*1000:.0f}g, Mot={PAYLOAD_MOTOR*1000:.0f}g, FC={PAYLOAD_FC*1000:.0f}g)  ║
+    ║                                                                  ║
+    ║  PAYLOAD PLACEMENT (from wing LE)                                ║
+    ║    Battery:     {bc['batt_x']*100:+.1f} cm                                     ║
+    ║    Motor(s):    {bc['motor_x']*100:+.1f} cm                                     ║
     ║                                                                  ║
     ║  COMPETITION STRATEGY                                            ║
     ║    Hold vertical, nose down. DO NOT throw — just release.        ║
@@ -94,6 +97,8 @@ if __name__ == "__main__":
     print(f"  ║    Total Mass:  {best['mass']*1000:5.1f} g                        ║")
     print(f"  ║    Structure:   {best['structural_mass']*1000:5.1f} g                        ║")
     print(f"  ║    Ballast:     {best['ballast']*1000:5.1f} g                        ║")
+    print(f"  ║    Batt (pos):  {best['batt_x']*100:+5.1f} cm                       ║")
+    print(f"  ║    Motor(pos):  {best['motor_x']*100:+5.1f} cm                       ║")
     print(f"  ║    Trim alpha:  {best['alpha']:+5.1f}°                        ║")
     print(f"  ║    L/D:         {best['LD']:5.2f}                           ║")
     print(f"  ║    Trim speed:  {best['V']:5.2f} m/s                     ║")
