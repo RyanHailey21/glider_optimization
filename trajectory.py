@@ -1,7 +1,7 @@
 import aerosandbox as asb
 import aerosandbox.numpy as np
 import casadi as ca
-from config import g, DROP_HEIGHT, WING_AF, TAIL_AF
+from config import g, DROP_HEIGHT, TAIL_AF
 
 def optimize_trajectory(bc):
     SPAN       = bc["span"]
@@ -52,6 +52,8 @@ def optimize_trajectory(bc):
     T_final = opti.variable(init_guess=T_guess, lower_bound=1.0, upper_bound=120.0)
     time    = T_final * ca.linspace(0, 1, N)
 
+    wing_af_obj = asb.Airfoil(bc["wing_af_name"])
+    
     dyn = asb.DynamicsPointMass2DSpeedGamma(
         mass_props=asb.MassProperties(mass=MASS),
         x_e   = opti.variable(init_guess=x_g),
@@ -67,8 +69,8 @@ def optimize_trajectory(bc):
             asb.Wing(
                 name="Main Wing", symmetric=True,
                 xsecs=[
-                    asb.WingXSec(xyz_le=[0, 0, 0], chord=CHRD, twist=0.0, airfoil=WING_AF),
-                    asb.WingXSec(xyz_le=[0, SPAN/2, SPAN/2 * 0.04], chord=CHRD, twist=-2.0, airfoil=WING_AF),
+                    asb.WingXSec(xyz_le=[0, 0, 0], chord=CHRD, twist=0.0, airfoil=wing_af_obj),
+                    asb.WingXSec(xyz_le=[0, SPAN/2, SPAN/2 * 0.04], chord=CHRD, twist=-2.0, airfoil=wing_af_obj),
                 ]
             ),
             asb.Wing(

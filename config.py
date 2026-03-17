@@ -21,6 +21,5 @@ PAYLOAD_MOTOR   = 0.020  # 20g
 PAYLOAD_OTHER   = 0.055  # 55g (wires, props, etc.)
 PAYLOAD_TOTAL   = PAYLOAD_BATTERY + PAYLOAD_FC + PAYLOAD_MOTOR + PAYLOAD_OTHER # 120g
 
-
-WING_AF = asb.Airfoil("sd7037")    # NeuralFoil: Re-accurate, undercambered
+CANDIDATE_AIRFOILS = ["sd7037", "ag12", "clarky", "e205"]
 TAIL_AF = asb.Airfoil("naca0009")  # Symmetric, thin stabiliser

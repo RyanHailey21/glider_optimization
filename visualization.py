@@ -32,7 +32,7 @@ def generate_plots(bc, traj, out_fig="glider_optimization_v2.png"):
             AR_ = b/c
             if AR_ < 4 or AR_ > 15:
                 continue
-            r = trimmed_min_sink(b, c)
+            r = trimmed_min_sink(b, c, bc["wing_af_name"])
             if r is not None:
                 sink_map[i, j] = r["sink"]
 
@@ -74,7 +74,7 @@ def generate_plots(bc, traj, out_fig="glider_optimization_v2.png"):
 
     # ── C: Sink-rate heat-map ────────────────────────────────────────────────
     ax2 = fig.add_subplot(gs[1, :2])
-    style_ax(ax2, f"Trimmed Sink Rate [m/s]  (120g Payload, SD7037, Cm=0) — green = longer flight")
+    style_ax(ax2, f"Trimmed Sink Rate [m/s]  (120g Payload, {bc['wing_af_name'].upper()}, Cm=0) — green = longer flight")
     vmin_s = float(np.nanmin(sink_map))
     vmax_s = min(float(np.nanmax(sink_map)), 5.0)
     im = ax2.pcolormesh(sv_cm, cv_cm, sink_map, cmap="RdYlGn_r", shading="auto", vmin=vmin_s, vmax=vmax_s)
@@ -98,7 +98,7 @@ def generate_plots(bc, traj, out_fig="glider_optimization_v2.png"):
 
     tail_vol = (bc["tail_chord"] * bc["tail_span"] * 2 * bc["tail_arm"]) / (bc["S"] * bc["chord"])
     card = [
-        ("─── WING  (SD7037) ───────────", GOLD),
+        (f"─── WING  ({bc['wing_af_name'].upper()}) ───────────", GOLD),
         (f"  Span         {bc['span']*100:5.1f} cm",  CYAN),
         (f"  Chord        {bc['chord']*100:5.1f} cm",  CYAN),
         (f"  Aspect ratio {bc['AR']:5.1f}",            CYAN),
@@ -130,7 +130,7 @@ def generate_plots(bc, traj, out_fig="glider_optimization_v2.png"):
         y -= 0.046
 
     fig.suptitle(
-        "Glider Optimizer v2  ·  SD7037 wing + NACA0009 tail  ·  "
+        f"Glider Optimizer v2  ·  {bc['wing_af_name'].upper()} wing + NACA0009 tail  ·  "
         "AeroBuildup  ·  Cm-trimmed  ·  60 ft nose-down drop",
         color="white", fontsize=11, fontweight="bold", y=0.99
     )

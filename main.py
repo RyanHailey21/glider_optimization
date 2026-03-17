@@ -17,8 +17,8 @@ def print_build_guide(bc, traj):
     ╔══════════════════════════════════════════════════════════════════╗
     ║          COMPETITION GLIDER — BUILD GUIDE                        ║
     ╠══════════════════════════════════════════════════════════════════╣
-    ║  WING AIRFOIL: SD7037                                            ║
-    ║    Re(trim) = {bc['Re']:.0f}   →  well within SD7037's sweet spot       ║
+    ║  WING AIRFOIL: {bc['wing_af_name'].upper()}                                            ║
+    ║    Re(trim) = {bc['Re']:.0f}                                              ║
     ║    Undercambered: generates lift at 0° AoA                       ║
     ║    Trim AoA = {bc['alpha']:+.1f}°  (peak L/D region, not near stall)       ║
     ║                                                                  ║
@@ -60,14 +60,14 @@ if __name__ == "__main__":
     best    = None
     results = []
     count   = 0
-    total   = len(spans) * len(chords)
+    total   = len(spans) * len(chords) * len(CANDIDATE_AIRFOILS)
 
-    for b, c in iterproduct(spans, chords):
+    for b, c, af in iterproduct(spans, chords, CANDIDATE_AIRFOILS):
         AR = b / c
         if AR < 4 or AR > 15:
             continue
         count += 1
-        r = trimmed_min_sink(b, c)
+        r = trimmed_min_sink(b, c, af)
         if r is None:
             continue
         results.append(r)
@@ -80,7 +80,7 @@ if __name__ == "__main__":
 
     print(f"\n  {len(results)} valid configs evaluated\n")
     print(f"  ╔══ BEST TRIMMED DESIGN ══════════════════════════╗")
-    print(f"  ║  WING  — SD7037                                  ║")
+    print(f"  ║  WING  — {best['wing_af_name'].upper()}                                  ║")
     print(f"  ║    Span:        {best['span']*100:5.1f} cm                       ║")
     print(f"  ║    Chord:       {best['chord']*100:5.1f} cm                       ║")
     print(f"  ║    Aspect ratio:{best['AR']:5.1f}                           ║")
