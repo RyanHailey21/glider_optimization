@@ -1,6 +1,7 @@
 import aerosandbox as asb
 import aerosandbox.numpy as np
 import casadi as ca
+import numpy as onp
 from config import *
 from mass_model import estimate_mass
 
@@ -32,6 +33,11 @@ def optimize_glider_mdo(wing_af_name):
                 CD_t[i, j] = float(np.atleast_1d(rt["CD"])[0])
                 Cm_t[i, j] = float(np.atleast_1d(rt["CM"])[0])
                 
+        # Conservative static stall references from the sampled 2D table.
+        cl_w_max_2d = float(np.max(CL_w))
+        cl_w_min_2d = float(np.min(CL_w))
+        alpha_stall_deg = float(np.min(alphas[np.argmax(CL_w, axis=0)]))
+
         spline_cl_w = ca.interpolant("clw", "bspline", [alphas, Res], CL_w.ravel(order='F'))
         spline_cd_w = ca.interpolant("cdw", "bspline", [alphas, Res], CD_w.ravel(order='F'))
         spline_cm_w = ca.interpolant("cmw", "bspline", [alphas, Res], Cm_w.ravel(order='F'))
@@ -81,7 +87,15 @@ def optimize_glider_mdo(wing_af_name):
     ballast = opti.variable(init_guess=0.01, lower_bound=0.0, upper_bound=0.300)
 
     # Note: Using root_chord as a proxy for structural estimate
-    structural_mass, structural_moment = estimate_mass(span, root_chord, tail_span, tail_chord, tail_arm)
+    structural_mass, structural_moment = estimate_mass(
+        span=span,
+        root_chord=root_chord,
+        taper=taper,
+        tail_span=tail_span,
+        tail_chord=tail_chord,
+        tail_arm=tail_arm,
+        target_cg_x=cg_x,
+    )
     total_mass = structural_mass + PAYLOAD_TOTAL + ballast
     W = total_mass * g
     
@@ -138,34 +152,80 @@ def optimize_glider_mdo(wing_af_name):
         (Moment_Y / (q * S * mac)) ** 2 <= 1e-6
     ])
 
+    # Static trim must stay away from stall in both alpha and lift coefficient.
+    stall_margin_alpha_deg = 2.0
+    stall_margin_cl = 0.90
+    cl_w_max_3d_est = cl_w_max_2d * (AR_w / (AR_w + 2))
+    cl_w_min_3d_est = cl_w_min_2d * (AR_w / (AR_w + 2))
+    opti.subject_to(alpha <= alpha_stall_deg - stall_margin_alpha_deg)
+    opti.subject_to(CL_wing <= stall_margin_cl * cl_w_max_3d_est)
+    opti.subject_to(CL_wing >= stall_margin_cl * cl_w_min_3d_est)
+
     # === 6. Objective ===
     # Maximize flight time (minimize sink rate)
     opti.minimize(V * Total_Drag / Total_Lift)
 
     # === 7. Solve ===
-    try:
-        sol = opti.solve(verbose=False, max_iter=2000)
-        print(f"  ✓ [{wing_af_name.upper()}] NLP Converged! Sink = {float(sol(V * Total_Drag / Total_Lift)):.2f} m/s")
-        
-        return {
-            "wing_af_name": wing_af_name,
-            # Geometry
-            "span": float(sol(span)), "chord": float(sol(root_chord)), 
-            "taper": float(sol(taper)), "twist": float(sol(twist)),
-            "tail_arm": float(sol(tail_arm)), "tail_chord": float(sol(tail_chord)), "tail_span": float(sol(tail_span)),
-            "i_tail": float(sol(i_tail)), "AR": float(sol(AR_w)), "S": float(sol(S)),
-            # Mass & Balance
-            "mass": float(sol(total_mass)), "structural_mass": float(sol(structural_mass)), "ballast": float(sol(ballast)),
-            "batt_x": float(sol(batt_x)), "motor_x": float(sol(motor_x)),
-            # Extracted Trim KPIs
-            "V": float(sol(V)), "LD": float(sol(Total_Lift / Total_Drag)), 
-            "alpha": float(sol(alpha)),
-            "sink": float(sol(V * Total_Drag / Total_Lift)),
-            "Re": rho * float(sol(V)) * float(sol(mac)) / mu
-        }
-    except Exception as exc:
-        print(f"  ✗ [{wing_af_name.upper()}] Static NLP Failed: {exc}")
+    # Multi-start improves robustness on this nonconvex NLP.
+    rng = onp.random.default_rng(7)
+    n_starts = 6
+    best_sol = None
+    best_sink = None
+
+    for i in range(n_starts):
+        if i > 0:
+            opti.set_initial(span, float(rng.uniform(MIN_SPAN, MAX_SPAN)))
+            opti.set_initial(root_chord, float(rng.uniform(MIN_CHORD, MAX_CHORD)))
+            opti.set_initial(taper, float(rng.uniform(0.3, 1.0)))
+            opti.set_initial(twist, float(rng.uniform(-6.0, 2.0)))
+            opti.set_initial(tail_arm, float(rng.uniform(MIN_TAIL_ARM, MAX_TAIL_ARM)))
+            opti.set_initial(tail_chord, float(rng.uniform(MIN_TAIL_CHORD, MAX_TAIL_CHORD)))
+            opti.set_initial(tail_span, float(rng.uniform(MIN_TAIL_SPAN, MAX_TAIL_SPAN)))
+            opti.set_initial(i_tail, float(rng.uniform(-15.0, 5.0)))
+            opti.set_initial(batt_x, float(rng.uniform(MIN_BATTERY_X, MAX_BATTERY_X)))
+            opti.set_initial(motor_x, float(rng.uniform(MIN_MOTOR_X, 0.9)))
+            opti.set_initial(ballast, float(rng.uniform(0.0, 0.08)))
+            opti.set_initial(alpha, float(rng.uniform(-2.0, 8.0)))
+            opti.set_initial(V, float(rng.uniform(4.0, 20.0)))
+
+        try:
+            sol_i = opti.solve(verbose=False, max_iter=2000)
+            sink_i = float(sol_i(V * Total_Drag / Total_Lift))
+
+            if best_sink is None or sink_i < best_sink:
+                best_sink = sink_i
+                best_sol = sol_i
+        except Exception:
+            continue
+
+    if best_sol is None:
+        print(f"  ✗ [{wing_af_name.upper()}] Static NLP Failed in all multi-start attempts.")
         return None
+
+    sol = best_sol
+    print(f"  ✓ [{wing_af_name.upper()}] NLP Converged! Sink = {float(sol(V * Total_Drag / Total_Lift)):.2f} m/s")
+
+    return {
+        "wing_af_name": wing_af_name,
+        # Geometry
+        "span": float(sol(span)), "chord": float(sol(root_chord)),
+        "taper": float(sol(taper)), "twist": float(sol(twist)),
+        "tail_arm": float(sol(tail_arm)), "tail_chord": float(sol(tail_chord)), "tail_span": float(sol(tail_span)),
+        "i_tail": float(sol(i_tail)), "AR": float(sol(AR_w)), "S": float(sol(S)),
+        # Mass & Balance
+        "mass": float(sol(total_mass)), "structural_mass": float(sol(structural_mass)), "ballast": float(sol(ballast)),
+        "batt_x": float(sol(batt_x)), "motor_x": float(sol(motor_x)),
+        # Stall estimates passed to the trajectory phase
+        "alpha_stall_deg": alpha_stall_deg,
+        "alpha_stall_margin_deg": stall_margin_alpha_deg,
+        "CL_max_est": float(sol(cl_w_max_3d_est)),
+        "CL_min_est": float(sol(cl_w_min_3d_est)),
+        # Extracted Trim KPIs
+        "V": float(sol(V)), "LD": float(sol(Total_Lift / Total_Drag)),
+        "alpha": float(sol(alpha)),
+        "sink": float(sol(V * Total_Drag / Total_Lift)),
+        "Re": rho * float(sol(V)) * float(sol(mac)) / mu
+    }
 
 if __name__ == "__main__":
     optimize_glider_mdo("sd7037")

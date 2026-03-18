@@ -66,8 +66,11 @@ def optimize_trajectory(best):
         np.linspace(np.radians(-12), np.radians(-3),  N_glide),
     ])
     
-    # A free-flight glider flies at a globally constant alpha!
-    alpha_var = opti.variable(init_guess=5.0, lower_bound=-10.0, upper_bound=10.0)
+    # A free-flight glider flies at a globally constant alpha.
+    alpha_stall_deg = float(best.get("alpha_stall_deg", 12.0))
+    alpha_stall_margin_deg = float(best.get("alpha_stall_margin_deg", 2.0))
+    alpha_upper_bound = min(10.0, alpha_stall_deg - alpha_stall_margin_deg)
+    alpha_var = opti.variable(init_guess=5.0, lower_bound=-10.0, upper_bound=alpha_upper_bound)
 
     dyn = asb.DynamicsPointMass2DSpeedGamma(
         mass_props=asb.MassProperties(mass=best["mass"]),
@@ -94,6 +97,15 @@ def optimize_trajectory(best):
         dyn.z_e      <= 0.0,
     ])
 
+    # Keep the entire trajectory away from estimated wing stall limits.
+    cl_max_est = float(best.get("CL_max_est", 1.1))
+    cl_min_est = float(best.get("CL_min_est", -1.1))
+    cl_margin = 0.90
+    opti.subject_to([
+        aero["CL"] <= cl_margin * cl_max_est,
+        aero["CL"] >= cl_margin * cl_min_est,
+    ])
+
     gamma_smoothness = np.sum(np.diff(dyn.gamma) ** 2)
     
     # Penalize pitching moment to force the globally constant alpha to be the trim alpha
@@ -104,6 +116,7 @@ def optimize_trajectory(best):
 
     try:
         sol = opti.solve(verbose=False, max_iter=3000)
+        alpha_sol = float(sol(alpha_var)) * np.ones(N)
         return {
             "T_opt" : float(sol(T_final)),
             "t_sol" : sol(time).flatten(),
@@ -111,7 +124,7 @@ def optimize_trajectory(best):
             "z_sol" : sol(dyn.z_e).flatten(),
             "V_sol" : sol(dyn.speed).flatten(),
             "g_sol" : np.degrees(sol(dyn.gamma).flatten()),
-            "a_sol" : sol(dyn.alpha).flatten(),
+            "a_sol" : alpha_sol,
             "CL_sol": sol(aero["CL"]).flatten(),
             "CD_sol": sol(aero["CD"]).flatten(),
             "Cm_sol": sol(aero["Cm"]).flatten()
