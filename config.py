@@ -35,3 +35,22 @@ PAYLOAD_TOTAL   = PAYLOAD_BATTERY + PAYLOAD_FC + PAYLOAD_MOTOR + PAYLOAD_OTHER #
 
 CANDIDATE_AIRFOILS = ["sd7037", "ag12", "clarky", "e205", "s1223", "e423", "fx63137"]
 TAIL_AF = asb.Airfoil("naca0009")  # Symmetric, thin stabiliser
+
+# Optimization workflow controls
+TOP_K_PHASE2 = 3
+N_STARTS_MDO = 6
+
+# Surrogate controls (NeuralFoil)
+SURROGATE_USE_CACHE = True
+SURROGATE_CACHE_DIR = ".cache/neuralfoil"
+SURROGATE_LOCAL_REFINEMENT = True
+REFINE_ALPHA_WINDOW_DEG = 4.0
+REFINE_ALPHA_POINTS = 17
+REFINE_RE_MIN_SCALE = 0.65
+REFINE_RE_MAX_SCALE = 1.35
+REFINE_RE_POINTS = 9
+
+# Trajectory alpha(t) controls
+TRAJ_ALPHA_CTRL_POINTS = 5
+TRAJ_ALPHA_DOT_MAX_DEG_S = 35.0
+TRAJ_ALPHA_SMOOTH_WEIGHT = 5e-4

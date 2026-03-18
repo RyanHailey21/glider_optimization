@@ -1,6 +1,7 @@
 import aerosandbox as asb
 import aerosandbox.numpy as np
 import casadi as ca
+import numpy as onp
 from config import *
 
 def optimize_trajectory(best):
@@ -46,7 +47,8 @@ def optimize_trajectory(best):
     )
 
     T_final = opti.variable(init_guess=T_guess, lower_bound=1.0, upper_bound=120.0)
-    time    = T_final * ca.linspace(0, 1, N)
+    tau = onp.linspace(0.0, 1.0, N)
+    time = T_final * tau
 
     h_dive_g= min(0.35 * DROP_HEIGHT, 6.0)
     alt_g   = np.concatenate([
@@ -66,11 +68,29 @@ def optimize_trajectory(best):
         np.linspace(np.radians(-12), np.radians(-3),  N_glide),
     ])
     
-    # A free-flight glider flies at a globally constant alpha.
+    # Model alpha as a low-order piecewise-linear control schedule.
     alpha_stall_deg = float(best.get("alpha_stall_deg", 12.0))
     alpha_stall_margin_deg = float(best.get("alpha_stall_margin_deg", 2.0))
     alpha_upper_bound = min(10.0, alpha_stall_deg - alpha_stall_margin_deg)
-    alpha_var = opti.variable(init_guess=5.0, lower_bound=-10.0, upper_bound=alpha_upper_bound)
+    n_alpha_ctrl = int(max(2, TRAJ_ALPHA_CTRL_POINTS))
+    alpha_ctrl = opti.variable(
+        init_guess=np.full(n_alpha_ctrl, 5.0),
+        lower_bound=-10.0,
+        upper_bound=alpha_upper_bound,
+    )
+
+    tau_ctrl = onp.linspace(0.0, 1.0, n_alpha_ctrl)
+    W = onp.zeros((N, n_alpha_ctrl))
+    for i, t in enumerate(tau):
+        j = onp.searchsorted(tau_ctrl, t, side="right") - 1
+        j = int(onp.clip(j, 0, n_alpha_ctrl - 2))
+        dt_local = tau_ctrl[j + 1] - tau_ctrl[j]
+        w_hi = (t - tau_ctrl[j]) / dt_local
+        w_lo = 1.0 - w_hi
+        W[i, j] = w_lo
+        W[i, j + 1] = w_hi
+
+    alpha_profile = ca.mtimes(ca.DM(W), alpha_ctrl)
 
     dyn = asb.DynamicsPointMass2DSpeedGamma(
         mass_props=asb.MassProperties(mass=best["mass"]),
@@ -78,7 +98,7 @@ def optimize_trajectory(best):
         z_e   = opti.variable(init_guess=-alt_g),
         speed = opti.variable(init_guess=V_g, lower_bound=3.0, upper_bound=35.0),
         gamma = opti.variable(init_guess=gam_g, lower_bound=np.radians(-89), upper_bound=np.radians(45)),
-        alpha = alpha_var,
+        alpha = alpha_profile,
     )
 
     aero = asb.AeroBuildup(airplane=airplane, op_point=dyn.op_point).run()
@@ -97,6 +117,10 @@ def optimize_trajectory(best):
         dyn.z_e      <= 0.0,
     ])
 
+    dt = np.diff(time)
+    alpha_dot = np.diff(dyn.alpha) / dt
+    opti.subject_to(alpha_dot ** 2 <= TRAJ_ALPHA_DOT_MAX_DEG_S ** 2)
+
     # Keep the entire trajectory away from estimated wing stall limits.
     cl_max_est = float(best.get("CL_max_est", 1.1))
     cl_min_est = float(best.get("CL_min_est", -1.1))
@@ -107,24 +131,30 @@ def optimize_trajectory(best):
     ])
 
     gamma_smoothness = np.sum(np.diff(dyn.gamma) ** 2)
+    alpha_smoothness = np.sum(np.diff(dyn.alpha) ** 2)
     
     # Penalize pitching moment to force the globally constant alpha to be the trim alpha
     cm_penalty = ca.sum1(aero["Cm"] ** 2)
     
     # The objective: maximize flight time, smoothly pull out, and stay in natural pitch trim
-    opti.minimize(-T_final + 1e-3 * gamma_smoothness + 1e4 * cm_penalty)
+    opti.minimize(
+        -T_final
+        + 1e-3 * gamma_smoothness
+        + TRAJ_ALPHA_SMOOTH_WEIGHT * alpha_smoothness
+        + 1e4 * cm_penalty
+    )
 
     try:
         sol = opti.solve(verbose=False, max_iter=3000)
-        alpha_sol = float(sol(alpha_var)) * np.ones(N)
         return {
+            "trajectory_feasible": True,
             "T_opt" : float(sol(T_final)),
             "t_sol" : sol(time).flatten(),
             "x_sol" : sol(dyn.x_e).flatten(),
             "z_sol" : sol(dyn.z_e).flatten(),
             "V_sol" : sol(dyn.speed).flatten(),
             "g_sol" : np.degrees(sol(dyn.gamma).flatten()),
-            "a_sol" : alpha_sol,
+            "a_sol" : sol(dyn.alpha).flatten(),
             "CL_sol": sol(aero["CL"]).flatten(),
             "CD_sol": sol(aero["CD"]).flatten(),
             "Cm_sol": sol(aero["Cm"]).flatten()
@@ -136,13 +166,14 @@ def optimize_trajectory(best):
             # When CasADi is extremely close (e.g., 1e-9 violation) it might still throw an Exception.
             # We can still extract the visually correct physics path via debug.value()
             return {
+                "trajectory_feasible": False,
                 "T_opt" : float(opti.debug.value(T_final)),
                 "t_sol" : opti.debug.value(time).flatten(),
                 "x_sol" : opti.debug.value(dyn.x_e).flatten(),
                 "z_sol" : opti.debug.value(dyn.z_e).flatten(),
                 "V_sol" : opti.debug.value(dyn.speed).flatten(),
                 "g_sol" : np.degrees(opti.debug.value(dyn.gamma).flatten()),
-                "a_sol" : opti.debug.value(alpha_var) * np.ones(N),
+                "a_sol" : opti.debug.value(dyn.alpha).flatten(),
                 "CL_sol": opti.debug.value(aero["CL"]).flatten(),
                 "CD_sol": opti.debug.value(aero["CD"]).flatten(),
                 "Cm_sol": opti.debug.value(aero["Cm"]).flatten()
@@ -151,6 +182,7 @@ def optimize_trajectory(best):
             # Fallback empty trajectory dict for plotting if the dynamic sim fails
             # but we still want to see the glider build guide
             return {
+                "trajectory_feasible": False,
                 "T_opt" : 0.0, "t_sol" : np.zeros(N),
                 "x_sol" : np.zeros(N), "z_sol" : np.zeros(N),
                 "V_sol" : np.zeros(N), "g_sol" : np.zeros(N), "a_sol" : np.zeros(N),

@@ -58,7 +58,6 @@ if __name__ == "__main__":
     print("  MDO SOLVER — Monolithic Optimization")
     print("="*58)
 
-    best = None
     results = []
     
     for af in CANDIDATE_AIRFOILS:
@@ -67,11 +66,6 @@ if __name__ == "__main__":
             continue
             
         results.append(r)
-        
-        # Primary objective logic (minimize sink rate for maximum flight time)
-        sink_val = float(r["sink"])
-        if best is None or sink_val < float(best["sink"]):
-            best = r
             
     if not results:
         print("\n  ✗ No valid MDO configurations found.")
@@ -83,7 +77,41 @@ if __name__ == "__main__":
     print("  PHASE 2 — Trajectory NLP")
     print("="*58)
 
-    best_traj = optimize_trajectory(best)
+    top_k = min(TOP_K_PHASE2, len(results))
+    phase1_ranked = sorted(results, key=lambda x: float(x["sink"]))
+    phase2_pool = phase1_ranked[:top_k]
+    print(f"\n  Advancing top-{top_k} Phase 1 designs to trajectory solve...")
+
+    best = None
+    best_traj = None
+    for i, design in enumerate(phase2_pool, start=1):
+        print(
+            f"\n  [Phase 2 Candidate {i}/{top_k}] {design['wing_af_name'].upper()} "
+            f"(sink={float(design['sink']):.3f} m/s)"
+        )
+        traj_i = optimize_trajectory(design)
+
+        feasible_i = bool(traj_i.get("trajectory_feasible", True))
+        t_i = float(traj_i["T_opt"])
+        print(f"    -> Feasible: {feasible_i}, T={t_i:.2f} s")
+
+        if best_traj is None:
+            best = design
+            best_traj = traj_i
+            continue
+
+        feasible_best = bool(best_traj.get("trajectory_feasible", True))
+        t_best = float(best_traj["T_opt"])
+
+        if (feasible_i and not feasible_best) or (
+            feasible_i == feasible_best and t_i > t_best
+        ):
+            best = design
+            best_traj = traj_i
+
+    if best is None or best_traj is None:
+        print("\n  ✗ No valid Phase 2 trajectory solutions found.")
+        import sys; sys.exit(1)
     
     print("\n  Generating Optimal Performance Visuals...")
     generate_plots(best, best_traj)
