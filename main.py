@@ -3,6 +3,7 @@ import warnings
 
 from config import *
 from mdo_solver import optimize_glider_mdo
+from trajectory import optimize_trajectory
 from visualization import generate_plots
 
 warnings.filterwarnings("ignore")
@@ -46,7 +47,7 @@ def print_build_guide(bc, traj):
     ║                                                                  ║
     ║  COMPETITION STRATEGY                                            ║
     ║    Release method:  Hold vertical, nose down                           ║
-    ║    Dive recovery:   Starts at ~{traj['h_dive']:.1f} m                             ║
+    ║    Dive recovery:   Starts immediately upon release                    ║
     ║    Est. flight time:{traj['T_opt']:.1f} s                                               ║
     ║    Est. range:      {float(traj['x_sol'][-1]):.1f} m                                              ║
     ╚══════════════════════════════════════════════════════════════════╝
@@ -67,9 +68,9 @@ if __name__ == "__main__":
             
         results.append(r)
         
-        # Primary objective logic (maximize range)
-        range_val = float(r["x_sol"][-1])
-        if best is None or range_val > float(best["x_sol"][-1]):
+        # Primary objective logic (minimize sink rate for maximum flight time)
+        sink_val = float(r["sink"])
+        if best is None or sink_val < float(best["sink"]):
             best = r
             
     if not results:
@@ -78,19 +79,11 @@ if __name__ == "__main__":
         
     print(f"\n  {len(results)} valid configurations completely generated.")
     
-    # Generate Visualization
-    best_traj = {
-        "T_opt" : best["T_opt"],
-        "t_sol" : best["t_sol"],
-        "x_sol" : best["x_sol"],
-        "z_sol" : best["z_sol"],
-        "V_sol" : best["V_sol"],
-        "g_sol" : best["g_sol"],
-        "a_sol" : best["a_sol"],
-        "CL_sol": best["CL_sol"],
-        "CD_sol": best["CD_sol"],
-        "Cm_sol": best["Cm_sol"]
-    }
+    print("\n" + "="*58)
+    print("  PHASE 2 — Trajectory NLP")
+    print("="*58)
+
+    best_traj = optimize_trajectory(best)
     
     print("\n  Generating Optimal Performance Visuals...")
     generate_plots(best, best_traj)

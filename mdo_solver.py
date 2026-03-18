@@ -5,19 +5,56 @@ from config import *
 from mass_model import estimate_mass
 
 def optimize_glider_mdo(wing_af_name):
-    """
-    Multi-Disciplinary Optimization (MDO) formulation.
-    Finds the exact combination of Span, Chord, Tail dimensions, 
-    Payload placement, and Flight trajectory to maximize Range from a fixed drop height.
-    """
-    print(f"\n  [MDO] Solving for {wing_af_name.upper()}...")
+    print(f"\n  [MDO] Building aerodynamic surrogate model for {wing_af_name.upper()}...")
+    try:
+        from neuralfoil import get_aero_from_airfoil
+        
+        # Grid definition
+        alphas = np.linspace(-10, 15, 26)
+        Res    = np.array([20e3, 40e3, 60e3, 80e3, 100e3, 150e3])
+        
+        af_wing = asb.Airfoil(wing_af_name)
+        A, R = np.meshgrid(alphas, Res, indexing='ij')
+        
+        CL_w = np.zeros_like(A); CD_w = np.zeros_like(A); Cm_w = np.zeros_like(A)
+        CL_t = np.zeros_like(A); CD_t = np.zeros_like(A); Cm_t = np.zeros_like(A)
+        
+        for i, a in enumerate(alphas):
+            for j, re in enumerate(Res):
+                rw = get_aero_from_airfoil(af_wing, alpha=a, Re=re)
+                rt = get_aero_from_airfoil(TAIL_AF, alpha=a, Re=re)
+                
+                CL_w[i, j] = float(np.atleast_1d(rw["CL"])[0])
+                CD_w[i, j] = float(np.atleast_1d(rw["CD"])[0])
+                Cm_w[i, j] = float(np.atleast_1d(rw["CM"])[0])
+                
+                CL_t[i, j] = float(np.atleast_1d(rt["CL"])[0])
+                CD_t[i, j] = float(np.atleast_1d(rt["CD"])[0])
+                Cm_t[i, j] = float(np.atleast_1d(rt["CM"])[0])
+                
+        spline_cl_w = ca.interpolant("clw", "bspline", [alphas, Res], CL_w.ravel(order='F'))
+        spline_cd_w = ca.interpolant("cdw", "bspline", [alphas, Res], CD_w.ravel(order='F'))
+        spline_cm_w = ca.interpolant("cmw", "bspline", [alphas, Res], Cm_w.ravel(order='F'))
+        
+        spline_cl_t = ca.interpolant("clt", "bspline", [alphas, Res], CL_t.ravel(order='F'))
+        spline_cd_t = ca.interpolant("cdt", "bspline", [alphas, Res], CD_t.ravel(order='F'))
+        spline_cm_t = ca.interpolant("cmt", "bspline", [alphas, Res], Cm_t.ravel(order='F'))
+        
+    except ImportError:
+        print("NeuralFoil missing. Skipping surrogate generation.")
+        return None
+
+    print(f"  [MDO] Solving static NLP for minimum sink rate (flight time)...")
     
-    # NLP Setup & Guesses
+    # NLP Setup
     opti = asb.Opti()
     
     # === 1. Geometric & Payload Variables ===
     span       = opti.variable(init_guess=0.40, lower_bound=MIN_SPAN,  upper_bound=MAX_SPAN)
-    chord      = opti.variable(init_guess=0.08, lower_bound=MIN_CHORD, upper_bound=MAX_CHORD)
+    root_chord = opti.variable(init_guess=0.08, lower_bound=MIN_CHORD, upper_bound=MAX_CHORD)
+    taper      = opti.variable(init_guess=0.6,  lower_bound=0.3,       upper_bound=1.0)
+    twist      = opti.variable(init_guess=-2.0, lower_bound=-6.0,      upper_bound=2.0)
+    
     tail_arm   = opti.variable(init_guess=0.40, lower_bound=MIN_TAIL_ARM,   upper_bound=MAX_TAIL_ARM)
     tail_chord = opti.variable(init_guess=0.04, lower_bound=MIN_TAIL_CHORD, upper_bound=MAX_TAIL_CHORD)
     tail_span  = opti.variable(init_guess=0.08, lower_bound=MIN_TAIL_SPAN,  upper_bound=MAX_TAIL_SPAN)
@@ -26,14 +63,16 @@ def optimize_glider_mdo(wing_af_name):
     batt_x     = opti.variable(init_guess=-0.10,          lower_bound=MIN_BATTERY_X, upper_bound=MAX_BATTERY_X)
     motor_x    = opti.variable(init_guess=0.20,           lower_bound=MIN_MOTOR_X,   upper_bound=MAX_MOTOR_X)
     
-    S    = span * chord
-    cg_x = 0.25 * chord
+    # MAC calculation for swept/tapered wings
+    # For a straight leading-edge wing, mac = root_chord * 2/3 * (1 + taper + taper**2) / (1 + taper)
+    mac = root_chord * (2/3) * (1 + taper + taper**2) / (1 + taper)
+    S    = span * root_chord * (1 + taper) / 2
+    cg_x = 0.25 * mac
     
-    # Internal constraints
     opti.subject_to([
-        motor_x <= tail_arm + cg_x,          # motor must fit on boom
-        (span / chord) >= 4.0,               # AR bounds
-        (span / chord) <= 15.0
+        motor_x <= tail_arm + cg_x,          
+        (span / mac) >= 4.0,               
+        (span / mac) <= 15.0
     ])
     
     # === 2. Mass & Balance Physics ===
@@ -41,136 +80,92 @@ def optimize_glider_mdo(wing_af_name):
     other_x = (batt_x + cg_x + tail_arm) / 2
     ballast = opti.variable(init_guess=0.01, lower_bound=0.0, upper_bound=0.300)
 
-    structural_mass, structural_moment = estimate_mass(span, chord, tail_span, tail_chord, tail_arm)
+    # Note: Using root_chord as a proxy for structural estimate
+    structural_mass, structural_moment = estimate_mass(span, root_chord, tail_span, tail_chord, tail_arm)
     total_mass = structural_mass + PAYLOAD_TOTAL + ballast
     W = total_mass * g
     
     total_moment = structural_moment + ((PAYLOAD_BATTERY + ballast) * batt_x) + (PAYLOAD_MOTOR * motor_x) + (PAYLOAD_FC * fc_x) + (PAYLOAD_OTHER * other_x)
     opti.subject_to(total_moment / total_mass == cg_x)
 
-    # === 3. Trajectory Variables ===
-    N_dive  = 20
-    N_glide = 60
-    N       = N_dive + N_glide
-    T_guess = 12.0
+    # === 3. State Variables for Trim ===
+    alpha = opti.variable(init_guess=5.0, lower_bound=-5.0, upper_bound=12.0)
+    V     = opti.variable(init_guess=10.0, lower_bound=3.0, upper_bound=25.0)
 
-    T_final = opti.variable(init_guess=T_guess, lower_bound=1.0, upper_bound=120.0)
-    time    = T_final * ca.linspace(0, 1, N)
-
-    h_dive_g= min(0.35 * DROP_HEIGHT, 6.0)
-    alt_g   = np.concatenate([
-        np.linspace(DROP_HEIGHT, DROP_HEIGHT - h_dive_g, N_dive),
-        np.linspace(DROP_HEIGHT - h_dive_g, 0.05, N_glide),
-    ])
-    x_g     = np.concatenate([
-        np.linspace(0, 0.5, N_dive),
-        np.linspace(0.5, 130.0, N_glide),
-    ])
-    V_g     = np.concatenate([
-        np.linspace(1.0, 15.0, N_dive),
-        np.full(N_glide, 15.0),
-    ])
-    gam_g   = np.concatenate([
-        np.linspace(np.radians(-80), np.radians(-12), N_dive),
-        np.linspace(np.radians(-12), np.radians(-3),  N_glide),
-    ])
-    alpha_g = np.full(N, 5.0)
-
-    dyn = asb.DynamicsPointMass2DSpeedGamma(
-        mass_props=asb.MassProperties(mass=total_mass),
-        x_e   = opti.variable(init_guess=x_g),
-        z_e   = opti.variable(init_guess=-alt_g),
-        speed = opti.variable(init_guess=V_g, lower_bound=0.5, upper_bound=35.0),
-        gamma = opti.variable(init_guess=gam_g, lower_bound=np.radians(-89), upper_bound=np.radians(45)),
-        alpha = opti.variable(init_guess=alpha_g, lower_bound=-14.0, upper_bound=14.0),
-    )
-
-    # === 4. Airplane Geometry & Aerodynamics ===
-    wing_af_obj = asb.Airfoil(wing_af_name)
+    # === 4. Surrogate Aerodynamics & 3D Corrections ===
+    # For a twisted wing, calculate aero at MAC 
+    effective_alpha_MAC = alpha + twist * (0.5 * (1 + taper) * 0.5) # Roughly semi-span integrated twist
+    wing_re = ca.fmax(ca.fmin(rho * V * mac / mu, 150e3), 20e3)
     
-    airplane = asb.Airplane(
-        name="Glider", xyz_ref=[cg_x, 0, 0],
-        wings=[
-            asb.Wing(
-                name="Main Wing", symmetric=True,
-                xsecs=[
-                    asb.WingXSec(xyz_le=[0, 0, 0], chord=chord, twist=0.0, airfoil=wing_af_obj),
-                    asb.WingXSec(xyz_le=[0, span/2, span/2 * 0.04], chord=chord, twist=-2.0, airfoil=wing_af_obj),
-                ]
-            ),
-            asb.Wing(
-                name="Horizontal Stabilizer", symmetric=True,
-                xsecs=[
-                    asb.WingXSec(xyz_le=[0, 0, 0], chord=tail_chord, twist=i_tail, airfoil=TAIL_AF),
-                    asb.WingXSec(xyz_le=[0, tail_span, tail_span * 0.02], chord=tail_chord, twist=i_tail, airfoil=TAIL_AF),
-                ]
-            ).translate([tail_arm, 0, 0]),
-        ]
-    )
+    op_pts_w = ca.horzcat(effective_alpha_MAC, wing_re).T
+    cl_w_2d  = spline_cl_w(op_pts_w).T
+    cd_w_2d  = spline_cd_w(op_pts_w).T
+    cm_w_2d  = spline_cm_w(op_pts_w).T
+    
+    AR_w = span**2 / S
+    e_w  = 0.95
+    CL_wing  = cl_w_2d * (AR_w / (AR_w + 2))
+    CDi_wing = (CL_wing ** 2) / (np.pi * AR_w * e_w)
+    CD_wing  = cd_w_2d + CDi_wing
+    
+    eps = 2 * CL_wing / (np.pi * AR_w)
+    tail_alpha = alpha + i_tail - eps * (180/np.pi)
+    
+    tail_re = ca.fmax(ca.fmin(rho * V * tail_chord / mu, 150e3), 20e3)
+    op_pts_t = ca.horzcat(tail_alpha, tail_re).T
+    cl_t_2d  = spline_cl_t(op_pts_t).T
+    cd_t_2d  = spline_cd_t(op_pts_t).T
+    cm_t_2d  = spline_cm_t(op_pts_t).T
+    
+    AR_t = tail_span * 2 / tail_chord
+    e_t  = 0.95
+    CL_tail  = cl_t_2d * (AR_t / (AR_t + 2))
+    CDi_tail = (CL_tail ** 2) / (np.pi * AR_t * e_t)
+    CD_tail  = cd_t_2d + CDi_tail
+    
+    CD0_fuselage = 0.005
+    S_tail = tail_span * 2 * tail_chord
+    q = 0.5 * rho * V ** 2
+    
+    Total_Lift = q * (CL_wing * S + CL_tail * S_tail)
+    Total_Drag = q * (CD_wing * S + CD_tail * S_tail + CD0_fuselage * S)
+    Moment_Y = q * (cm_w_2d * S * mac + cm_t_2d * S_tail * tail_chord) - (q * CL_tail * S_tail * tail_arm)
 
-    aero = asb.AeroBuildup(airplane=airplane, op_point=dyn.op_point).run()
-
-    # Apply forces and link dynamics
-    dyn.add_gravity_force(g=g)
-    dyn.add_force(*aero["F_w"], axes="wind")
-    dyn.constrain_derivatives(opti, time)
-
-    # === 5. Trajectory Boundary Constraints ===
+    # === 5. Trim Constraints ===
     opti.subject_to([
-        aero["Cm"] == 0,                          # Glider must be pitch-trimmed at all points in the trajectory automatically!
-        dyn.x_e[0]   == 0.0,                      # Start at origin
-        dyn.z_e[0]   == -DROP_HEIGHT,             # Start at drop height
-        dyn.speed[0] <= 1.5,                      # Drop speed near 0
-        dyn.gamma[0] <= np.radians(-80),          # Nose-down drop
-        dyn.z_e[-1]  == 0.0,                      # Reaches ground
-        dyn.gamma[-1] >= np.radians(-30),         # Don't lawn-dart
-        dyn.gamma[-1] <= np.radians(0),
-        dyn.z_e      <= 0.0,                      # Don't go above ceiling
-        dyn.gamma    <= np.radians(30),
+        Total_Lift == W,
+        # Tolerance on pitch moment to help continuous convergence
+        (Moment_Y / (q * S * mac)) ** 2 <= 1e-6
     ])
 
     # === 6. Objective ===
-    alpha_smoothness = np.sum(np.diff(dyn.alpha) ** 2)
-    # Give primary weight to Range (x_e[-1]) and a secondary weight to time to prevent stalling behaviors
-    opti.minimize(-dyn.x_e[-1] - 0.5 * T_final + 1e-3 * alpha_smoothness)
+    # Maximize flight time (minimize sink rate)
+    opti.minimize(V * Total_Drag / Total_Lift)
 
     # === 7. Solve ===
     try:
-        sol = opti.solve(verbose=False, max_iter=3000)
-        print(f"  ✓ [{wing_af_name.upper()}] NLP Converged! Range = {float(sol(dyn.x_e[-1])):.1f} m")
-        
-        # Pull level flight trim states from the middle of the glide (index N_dive + 20)
-        idx_trim = N_dive + 20
-        V_trim  = float(sol(dyn.speed[idx_trim]))
-        CL_trim = float(sol(aero["CL"][idx_trim]))
-        CD_trim = float(sol(aero["CD"][idx_trim]))
+        sol = opti.solve(verbose=False, max_iter=2000)
+        print(f"  ✓ [{wing_af_name.upper()}] NLP Converged! Sink = {float(sol(V * Total_Drag / Total_Lift)):.2f} m/s")
         
         return {
             "wing_af_name": wing_af_name,
             # Geometry
-            "span": float(sol(span)), "chord": float(sol(chord)), 
+            "span": float(sol(span)), "chord": float(sol(root_chord)), 
+            "taper": float(sol(taper)), "twist": float(sol(twist)),
             "tail_arm": float(sol(tail_arm)), "tail_chord": float(sol(tail_chord)), "tail_span": float(sol(tail_span)),
-            "i_tail": float(sol(i_tail)), "AR": float(sol(span/chord)), "S": float(sol(S)),
+            "i_tail": float(sol(i_tail)), "AR": float(sol(AR_w)), "S": float(sol(S)),
             # Mass & Balance
             "mass": float(sol(total_mass)), "structural_mass": float(sol(structural_mass)), "ballast": float(sol(ballast)),
             "batt_x": float(sol(batt_x)), "motor_x": float(sol(motor_x)),
-            # Trajectory Series
-            "T_opt" : float(sol(T_final)),
-            "t_sol" : sol(time).flatten(),
-            "x_sol" : sol(dyn.x_e).flatten(),
-            "z_sol" : sol(dyn.z_e).flatten(),
-            "V_sol" : sol(dyn.speed).flatten(),
-            "g_sol" : np.degrees(sol(dyn.gamma).flatten()),
-            "a_sol" : sol(dyn.alpha).flatten(),
-            "CL_sol": sol(aero["CL"]).flatten(),
-            "CD_sol": sol(aero["CD"]).flatten(),
-            "Cm_sol": sol(aero["Cm"]).flatten(),
             # Extracted Trim KPIs
-            "V": V_trim, "LD": CL_trim/CD_trim, 
-            "alpha": float(sol(dyn.alpha[idx_trim])),
-            "sink": V_trim * CD_trim / CL_trim,
-            "Re": rho * V_trim * float(sol(chord)) / mu
+            "V": float(sol(V)), "LD": float(sol(Total_Lift / Total_Drag)), 
+            "alpha": float(sol(alpha)),
+            "sink": float(sol(V * Total_Drag / Total_Lift)),
+            "Re": rho * float(sol(V)) * float(sol(mac)) / mu
         }
     except Exception as exc:
-        print(f"  ✗ [{wing_af_name.upper()}] NLP Failed: {exc}")
+        print(f"  ✗ [{wing_af_name.upper()}] Static NLP Failed: {exc}")
         return None
+
+if __name__ == "__main__":
+    optimize_glider_mdo("sd7037")

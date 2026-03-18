@@ -69,6 +69,8 @@ def generate_plots(bc, traj, out_fig="glider_optimization_v2.png"):
         (f"─── WING  ({bc['wing_af_name'].upper()}) ───────────", GOLD),
         (f"  Span         {bc['span']*100:5.1f} cm",  CYAN),
         (f"  Chord        {bc['chord']*100:5.1f} cm",  CYAN),
+        (f"  Taper ratio  {bc['taper']:5.2f}",            CYAN),
+        (f"  Washout      {bc['twist']:+5.1f}°",          CYAN),
         (f"  Aspect ratio {bc['AR']:5.1f}",            CYAN),
         (f"  Re (trim)    {bc['Re']:7.0f}",      CYAN),
         ("", GREY),
