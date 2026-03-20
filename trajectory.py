@@ -15,7 +15,8 @@ def optimize_trajectory(best):
     T_guess = 12.0
     
     # ── Geometry from Phase 1 ──
-    cg_x = 0.25 * best["chord"]
+    mac = best["chord"] * (2 / 3) * (1 + best["taper"] + best["taper"] ** 2) / (1 + best["taper"])
+    cg_x = 0.25 * mac
     wing_af_obj = asb.Airfoil(best["wing_af_name"])
     
     # Calculate sweep offset for a straight leading edge (optional, but typical for gliders)
@@ -72,10 +73,11 @@ def optimize_trajectory(best):
     alpha_stall_deg = float(best.get("alpha_stall_deg", 12.0))
     alpha_stall_margin_deg = float(best.get("alpha_stall_margin_deg", 2.0))
     alpha_upper_bound = min(10.0, alpha_stall_deg - alpha_stall_margin_deg)
+    alpha_lower_bound = -10.0
     n_alpha_ctrl = int(max(2, TRAJ_ALPHA_CTRL_POINTS))
     alpha_ctrl = opti.variable(
         init_guess=np.full(n_alpha_ctrl, 5.0),
-        lower_bound=-10.0,
+        lower_bound=alpha_lower_bound,
         upper_bound=alpha_upper_bound,
     )
 
@@ -121,27 +123,26 @@ def optimize_trajectory(best):
     alpha_dot = np.diff(dyn.alpha) / dt
     opti.subject_to(alpha_dot ** 2 <= TRAJ_ALPHA_DOT_MAX_DEG_S ** 2)
 
-    # Keep the entire trajectory away from estimated wing stall limits.
-    cl_max_est = float(best.get("CL_max_est", 1.1))
-    cl_min_est = float(best.get("CL_min_est", -1.1))
-    cl_margin = 0.90
+    # Stall protection is enforced consistently via alpha bounds derived from
+    # Phase 1 wing-stall estimates, instead of mixing whole-aircraft CL with wing CL limits.
     opti.subject_to([
-        aero["CL"] <= cl_margin * cl_max_est,
-        aero["CL"] >= cl_margin * cl_min_est,
+        dyn.alpha <= alpha_upper_bound,
+        dyn.alpha >= alpha_lower_bound,
     ])
 
     gamma_smoothness = np.sum(np.diff(dyn.gamma) ** 2)
     alpha_smoothness = np.sum(np.diff(dyn.alpha) ** 2)
     
-    # Penalize pitching moment to force the globally constant alpha to be the trim alpha
-    cm_penalty = ca.sum1(aero["Cm"] ** 2)
+    # Penalize pitch moment softly; normalized by horizon length to keep
+    # flight-time maximization as the dominant objective.
+    cm_penalty = ca.sum1(aero["Cm"] ** 2) / N
     
     # The objective: maximize flight time, smoothly pull out, and stay in natural pitch trim
     opti.minimize(
         -T_final
         + 1e-3 * gamma_smoothness
         + TRAJ_ALPHA_SMOOTH_WEIGHT * alpha_smoothness
-        + 1e4 * cm_penalty
+        + TRAJ_CM_PENALTY_WEIGHT * cm_penalty
     )
 
     try:
